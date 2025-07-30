@@ -14,6 +14,18 @@ interface Obstacle extends GameObject {
   speed: number;
 }
 
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  size: number;
+  color: string;
+  type: 'blood' | 'bone' | 'explosion';
+}
+
 const Index = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameOver' | 'discount'>('menu');
@@ -30,6 +42,9 @@ const Index = () => {
   
   const [obstacles, setObstacles] = useState<Obstacle[]>([]);
   const [playerVelocityY, setPlayerVelocityY] = useState(0);
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [deathAnimation, setDeathAnimation] = useState(0);
+  const [screenShake, setScreenShake] = useState(0);
   const gameLoopRef = useRef<number>();
   const keysRef = useRef<{[key: string]: boolean}>({});
 
@@ -46,6 +61,63 @@ const Index = () => {
     setScore(0);
     setPlayerVelocityY(0);
     setShowDiscountBanner(false);
+    setParticles([]);
+    setDeathAnimation(0);
+    setScreenShake(0);
+  }, []);
+
+  // Создание частиц смерти
+  const createDeathParticles = useCallback((x: number, y: number) => {
+    const newParticles: Particle[] = [];
+    
+    // Брызги крови
+    for (let i = 0; i < 15; i++) {
+      newParticles.push({
+        x: x + 20,
+        y: y + 20,
+        vx: (Math.random() - 0.5) * 20,
+        vy: Math.random() * -15 - 5,
+        life: 60,
+        maxLife: 60,
+        size: Math.random() * 8 + 4,
+        color: `rgb(${150 + Math.random() * 50}, ${Math.random() * 30}, ${Math.random() * 30})`,
+        type: 'blood'
+      });
+    }
+    
+    // Кости и черепа
+    for (let i = 0; i < 8; i++) {
+      newParticles.push({
+        x: x + 20,
+        y: y + 20,
+        vx: (Math.random() - 0.5) * 15,
+        vy: Math.random() * -12 - 3,
+        life: 120,
+        maxLife: 120,
+        size: Math.random() * 6 + 6,
+        color: 'white',
+        type: 'bone'
+      });
+    }
+    
+    // Частицы взрыва
+    for (let i = 0; i < 20; i++) {
+      newParticles.push({
+        x: x + 20,
+        y: y + 20,
+        vx: (Math.random() - 0.5) * 25,
+        vy: (Math.random() - 0.5) * 25,
+        life: 40,
+        maxLife: 40,
+        size: Math.random() * 4 + 2,
+        color: `rgb(255, ${100 + Math.random() * 100}, 0)`,
+        type: 'explosion'
+      });
+    }
+    
+    setParticles(newParticles);
+    setDeathAnimation(60);
+    setScreenShake(30);
   }, []);
 
   // Обработка нажатий клавиш
@@ -124,16 +196,35 @@ const Index = () => {
     // Проверка коллизий
     obstacles.forEach(obstacle => {
       if (checkCollision(player, obstacle)) {
+        createDeathParticles(player.x, player.y);
         setGameState('gameOver');
-        setTimeout(() => setShowDiscountBanner(true), 1000);
+        setTimeout(() => setShowDiscountBanner(true), 2000);
       }
     });
+
+    // Обновление частиц
+    setParticles(prev => prev.map(particle => ({
+      ...particle,
+      x: particle.x + particle.vx,
+      y: particle.y + particle.vy,
+      vy: particle.vy + 0.5, // гравитация
+      vx: particle.vx * 0.98, // сопротивление воздуха
+      life: particle.life - 1
+    })).filter(particle => particle.life > 0));
+
+    // Анимация смерти и тряска экрана
+    if (deathAnimation > 0) {
+      setDeathAnimation(prev => prev - 1);
+    }
+    if (screenShake > 0) {
+      setScreenShake(prev => prev - 1);
+    }
 
     // Увеличение счета
     setScore(prev => prev + 1);
 
     gameLoopRef.current = requestAnimationFrame(gameLoop);
-  }, [gameState, player, obstacles, playerVelocityY, checkCollision]);
+  }, [gameState, player, obstacles, playerVelocityY, checkCollision, createDeathParticles, deathAnimation, screenShake]);
 
   // Запуск игрового цикла
   useEffect(() => {
@@ -160,8 +251,18 @@ const Index = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Тряска экрана
+    let shakeX = 0, shakeY = 0;
+    if (screenShake > 0) {
+      shakeX = (Math.random() - 0.5) * screenShake * 0.5;
+      shakeY = (Math.random() - 0.5) * screenShake * 0.5;
+    }
+    
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+
     // Очистка canvas
-    ctx.fillStyle = '#45B7D1';
+    ctx.fillStyle = gameState === 'gameOver' && deathAnimation > 30 ? '#8B0000' : '#45B7D1';
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     // Рисование земли
@@ -169,29 +270,93 @@ const Index = () => {
     ctx.fillRect(0, GROUND_Y, CANVAS_WIDTH, CANVAS_HEIGHT - GROUND_Y);
 
     if (gameState === 'playing' || gameState === 'gameOver') {
-      // Рисование игрока
-      ctx.fillStyle = '#FF6B35';
-      ctx.fillRect(player.x, player.y, player.width, player.height);
+      // Рисование частиц
+      particles.forEach(particle => {
+        const alpha = particle.life / particle.maxLife;
+        
+        if (particle.type === 'blood') {
+          ctx.fillStyle = particle.color;
+          ctx.globalAlpha = alpha;
+          ctx.beginPath();
+          ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (particle.type === 'bone') {
+          ctx.fillStyle = 'white';
+          ctx.globalAlpha = alpha;
+          ctx.fillRect(particle.x - particle.size/2, particle.y - particle.size/2, particle.size, particle.size);
+          // Добавляем черные точки как глазницы
+          ctx.fillStyle = 'black';
+          ctx.fillRect(particle.x - 2, particle.y - 2, 2, 2);
+          ctx.fillRect(particle.x + 1, particle.y - 2, 2, 2);
+        } else if (particle.type === 'explosion') {
+          ctx.fillStyle = particle.color;
+          ctx.globalAlpha = alpha;
+          ctx.beginPath();
+          ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        ctx.globalAlpha = 1;
+      });
       
-      // Глаза игрока
-      ctx.fillStyle = 'white';
-      ctx.fillRect(player.x + 8, player.y + 8, 8, 8);
-      ctx.fillRect(player.x + 24, player.y + 8, 8, 8);
-      ctx.fillStyle = 'black';
-      ctx.fillRect(player.x + 10, player.y + 10, 4, 4);
-      ctx.fillRect(player.x + 26, player.y + 10, 4, 4);
+      // Рисование игрока (только если нет анимации смерти)
+      if (gameState === 'playing' || deathAnimation === 0) {
+        ctx.fillStyle = '#FF6B35';
+        ctx.fillRect(player.x, player.y, player.width, player.height);
+        
+        // Глаза игрока
+        ctx.fillStyle = 'white';
+        ctx.fillRect(player.x + 8, player.y + 8, 8, 8);
+        ctx.fillRect(player.x + 24, player.y + 8, 8, 8);
+        ctx.fillStyle = 'black';
+        if (gameState === 'gameOver') {
+          // Мертвые глаза - X
+          ctx.strokeStyle = 'black';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(player.x + 8, player.y + 8);
+          ctx.lineTo(player.x + 16, player.y + 16);
+          ctx.moveTo(player.x + 16, player.y + 8);
+          ctx.lineTo(player.x + 8, player.y + 16);
+          ctx.moveTo(player.x + 24, player.y + 8);
+          ctx.lineTo(player.x + 32, player.y + 16);
+          ctx.moveTo(player.x + 32, player.y + 8);
+          ctx.lineTo(player.x + 24, player.y + 16);
+          ctx.stroke();
+        } else {
+          ctx.fillRect(player.x + 10, player.y + 10, 4, 4);
+          ctx.fillRect(player.x + 26, player.y + 10, 4, 4);
+        }
+      }
 
       // Рисование препятствий
       obstacles.forEach(obstacle => {
         ctx.fillStyle = '#333333';
         ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+        // Добавляем шипы
+        ctx.fillStyle = '#666666';
+        for (let i = 0; i < obstacle.width; i += 8) {
+          ctx.beginPath();
+          ctx.moveTo(obstacle.x + i, obstacle.y);
+          ctx.lineTo(obstacle.x + i + 4, obstacle.y - 6);
+          ctx.lineTo(obstacle.x + i + 8, obstacle.y);
+          ctx.fill();
+        }
       });
 
       // Счет
       ctx.fillStyle = 'black';
       ctx.font = '24px Comic Sans MS';
       ctx.fillText(`Счет: ${Math.floor(score / 10)}`, 20, 40);
+      
+      // Эффект красной вспышки при смерти
+      if (gameState === 'gameOver' && deathAnimation > 45) {
+        ctx.fillStyle = `rgba(255, 0, 0, ${(deathAnimation - 45) / 15 * 0.5})`;
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      }
     }
+    
+    ctx.restore();
   });
 
   const startGame = () => {
